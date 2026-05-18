@@ -1,2 +1,6 @@
 .DS_Store
 scratchpad/
+__pycache__/
+*.py[cod]
+venv/
+*.db

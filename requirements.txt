@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+aiosqlite
+SQLAlchemy
+greenlet
