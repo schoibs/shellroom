@@ -45,12 +45,21 @@ class RoomSession:
     websocket: Any
 
     async def send_chat(self, text: str) -> None:
+        await self._send_room_event("chat_message", {"text": text})
+
+    async def send_typing_start(self) -> None:
+        await self._send_room_event("typing_start", {})
+
+    async def send_typing_stop(self) -> None:
+        await self._send_room_event("typing_stop", {})
+
+    async def _send_room_event(self, event_type: str, payload: dict[str, Any]) -> None:
         await self._send(
             {
-                "type": "chat_message",
+                "type": event_type,
                 "room_id": self.room_id,
                 "client_id": self.client_id,
-                "payload": {"text": text},
+                "payload": payload,
             }
         )
 

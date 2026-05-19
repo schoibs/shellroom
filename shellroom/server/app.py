@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -71,9 +72,16 @@ room_registry = RoomRegistry(
 async def lifespan(_: FastAPI):
     database.connect()
     await room_storage.initialize()
+
+    # starts a background asyncio task
+    presence_task = asyncio.create_task(_presence_sweep()) 
     try:
         yield
     finally:
+        # on shutdown, stop bg task, waits for it to acknowledge cancellation, ignores the normal cancellation exception, then closes the database
+        presence_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await presence_task
         await database.close()
 
 
@@ -103,7 +111,7 @@ def _client_presence(client: ClientConnection) -> dict:
     return {
         "client_id": client.client_id,
         "display_name": client.display_name,
-        "status": "online",
+        "status": client.status,
     }
 
 
@@ -153,6 +161,7 @@ def _user_joined_event(room_id: str, client: ClientConnection) -> dict:
         payload={
             "client_id": client.client_id,
             "display_name": client.display_name,
+            "status": client.status,
         },
     )
 
@@ -164,6 +173,29 @@ def _user_left_event(room_id: str, client: ClientConnection) -> dict:
         payload={
             "client_id": client.client_id,
             "display_name": client.display_name,
+        },
+    )
+
+
+def _user_status_event(room_id: str, event_type: str, client: ClientConnection) -> dict:
+    return _server_event(
+        room_id=room_id,
+        event_type=event_type,
+        payload={
+            "client_id": client.client_id,
+            "display_name": client.display_name,
+            "status": client.status,
+        },
+    )
+
+
+def _typing_users_event(room_id: str, typing_clients: list[ClientConnection]) -> dict:
+    return _server_event(
+        room_id=room_id,
+        event_type="typing_users",
+        payload={
+            "users": [client.display_name for client in typing_clients],
+            "client_ids": [client.client_id for client in typing_clients],
         },
     )
 
@@ -213,12 +245,16 @@ def _has_control_characters(text: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in text)
 
 
-def _parse_chat_message_event(room_id: str, joined_client_id: str, event: object) -> str:
+def _parse_client_event(
+    room_id: str,
+    joined_client_id: str,
+    event: object,
+) -> tuple[str, dict]:
     if not isinstance(event, dict):
         raise ClientEventError("INVALID_EVENT", "Expected a JSON object.")
 
-    if event.get("type") != "chat_message":
-        event_type = event.get("type")
+    event_type = event.get("type")
+    if event_type not in {"chat_message", "typing_start", "typing_stop"}:
         raise ClientEventError("UNSUPPORTED_EVENT", f"Event type '{event_type}' is not supported yet.")
 
     if event.get("room_id") != room_id:
@@ -227,10 +263,14 @@ def _parse_chat_message_event(room_id: str, joined_client_id: str, event: object
     if event.get("client_id") != joined_client_id:
         raise ClientEventError("CLIENT_MISMATCH", "Event client_id must match the joined client.")
 
-    payload = event.get("payload")
+    payload = event.get("payload") or {}
     if not isinstance(payload, dict):
         raise ClientEventError("INVALID_PAYLOAD", "Event payload must be an object.")
 
+    return str(event_type), payload
+
+
+def _parse_chat_message_payload(payload: dict) -> str:
     text = payload.get("text")
     if not isinstance(text, str):
         raise ClientEventError("INVALID_MESSAGE", "Message text is required.")
@@ -268,6 +308,49 @@ async def _broadcast(clients: list[ClientConnection], event: dict) -> None:
             await client.websocket.send_json(event)
         except Exception:
             pass
+
+
+async def _broadcast_active_if_needed(
+    room_id: str,
+    client: ClientConnection | None,
+    clients: list[ClientConnection],
+    became_active: bool,
+) -> None:
+    if client is not None and became_active:
+        await _broadcast(clients, _user_status_event(room_id, "user_active", client))
+
+
+async def _broadcast_typing_if_changed(
+    room_id: str,
+    clients: list[ClientConnection],
+    typing_clients: list[ClientConnection] | None,
+) -> None:
+    if typing_clients is not None:
+        await _broadcast(clients, _typing_users_event(room_id, typing_clients))
+
+
+async def _presence_sweep() -> None:
+    """
+    Checks for users who became idle or stopped typing on every second, then broadcasts those changes to connected clients
+    """
+    while True:
+        await asyncio.sleep(1)
+        sweep_result = await room_registry.sweep_presence(
+            idle_timeout_seconds=config.idle_timeout_seconds,
+            typing_timeout_seconds=config.typing_timeout_seconds,
+        )
+
+        for change in sweep_result.typing_changes:
+            await _broadcast(
+                change.clients,
+                _typing_users_event(change.room_id, change.typing_clients),
+            )
+
+        for change in sweep_result.status_changes:
+            await _broadcast(
+                change.clients,
+                _user_status_event(change.room_id, "user_idle", change.client),
+            )
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -347,6 +430,9 @@ async def websocket_room(websocket: WebSocket, room_id: str) -> None:
         joined_client_id = client.client_id
         recent_messages = await room_storage.list_recent_messages(room_id=room_id, limit=config.message_history_limit)
         await websocket.send_json(_room_state_event(room_id, current_clients, recent_messages))
+        typing_clients = await room_registry.list_typing_clients(room_id)
+        if typing_clients:
+            await websocket.send_json(_typing_users_event(room_id, typing_clients))
         await _broadcast(existing_clients, _user_joined_event(room_id, client))
 
         while True:
@@ -356,25 +442,60 @@ async def websocket_room(websocket: WebSocket, room_id: str) -> None:
                 await _send_error(websocket, room_id, "INVALID_JSON", "Expected a JSON event.")
                 continue
 
-            if not isinstance(event, dict):
-                await _send_error(websocket, room_id, "INVALID_EVENT", "Expected a JSON object.")
-                continue
-
-            event_type = event.get("type")
-            if event_type != "chat_message":
-                await _send_error(
-                    websocket,
-                    room_id,
-                    "UNSUPPORTED_EVENT",
-                    f"Event type '{event_type}' is not supported yet.",
-                )
-                continue
-
             try:
-                text = _parse_chat_message_event(room_id, joined_client_id, event)
+                event_type, payload = _parse_client_event(room_id, joined_client_id, event)
             except ClientEventError as exc:
                 await _send_error(websocket, room_id, exc.code, exc.message)
                 continue
+
+            if event_type == "typing_start":
+                active_client, active_clients, became_active = await room_registry.mark_client_active(
+                    room_id=room_id,
+                    client_id=joined_client_id,
+                )
+                await _broadcast_active_if_needed(room_id, active_client, active_clients, became_active)
+
+                clients, typing_update = await room_registry.set_typing(
+                    room_id=room_id,
+                    client_id=joined_client_id,
+                    is_typing=True,
+                )
+                await _broadcast_typing_if_changed(room_id, clients, typing_update)
+                continue
+
+            if event_type == "typing_stop":
+                active_client, active_clients, became_active = await room_registry.mark_client_active(
+                    room_id=room_id,
+                    client_id=joined_client_id,
+                )
+                await _broadcast_active_if_needed(room_id, active_client, active_clients, became_active)
+
+                clients, typing_update = await room_registry.set_typing(
+                    room_id=room_id,
+                    client_id=joined_client_id,
+                    is_typing=False,
+                )
+                await _broadcast_typing_if_changed(room_id, clients, typing_update)
+                continue
+
+            try:
+                text = _parse_chat_message_payload(payload)
+            except ClientEventError as exc:
+                await _send_error(websocket, room_id, exc.code, exc.message)
+                continue
+
+            active_client, active_clients, became_active = await room_registry.mark_client_active(
+                room_id=room_id,
+                client_id=joined_client_id,
+            )
+            await _broadcast_active_if_needed(room_id, active_client, active_clients, became_active)
+
+            clients, typing_update = await room_registry.set_typing(
+                room_id=room_id,
+                client_id=joined_client_id,
+                is_typing=False,
+            )
+            await _broadcast_typing_if_changed(room_id, clients, typing_update)
 
             try:
                 message = await room_storage.save_message(
@@ -393,9 +514,10 @@ async def websocket_room(websocket: WebSocket, room_id: str) -> None:
         pass
     finally:
         if joined_client_id is not None:
-            left_client, remaining_clients = await room_registry.remove_client(
+            left_client, remaining_clients, typing_update = await room_registry.remove_client(
                 room_id=room_id,
                 client_id=joined_client_id,
             )
             if left_client is not None:
                 await _broadcast(remaining_clients, _user_left_event(room_id, left_client))
+                await _broadcast_typing_if_changed(room_id, remaining_clients, typing_update)

@@ -57,6 +57,8 @@ The server reads configuration from environment variables:
 | `SHELLROOM_MAX_USERS_PER_ROOM` | `25` | Maximum connected users in one room. |
 | `SHELLROOM_MAX_ACTIVE_ROOMS` | `1000` | Maximum active room records. |
 | `SHELLROOM_MESSAGE_HISTORY_LIMIT` | `100` | Recent messages sent to a joining client. |
+| `SHELLROOM_TYPING_TIMEOUT_SECONDS` | `3` | Seconds before stale typing indicators clear. |
+| `SHELLROOM_IDLE_TIMEOUT_SECONDS` | `60` | Seconds before an inactive user is marked idle. |
 
 Example:
 
@@ -75,6 +77,7 @@ shellroom create --name Alice
 ```
 
 ShellRoom displays the room ID, invite URL, and join command in the UI header.
+Type `/who` in the chat input to show the users currently present in the room.
 
 ## Join A Room
 

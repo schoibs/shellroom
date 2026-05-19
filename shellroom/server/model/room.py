@@ -29,16 +29,19 @@ class Message:
     created_at: datetime
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class ClientConnection:
     client_id: str
     display_name: str
     websocket: Any
     joined_at: datetime
+    last_seen_at: datetime
+    status: str = "online"
 
 
 @dataclass(slots=True)
 class RuntimeRoom:
     id: str
     clients: dict[str, ClientConnection] = field(default_factory=dict)
+    typing_users: dict[str, datetime] = field(default_factory=dict)
     lock: Lock = field(default_factory=Lock)
