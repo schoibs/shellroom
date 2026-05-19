@@ -132,7 +132,8 @@ class ShellRoomApp(App[None]):
             self._receiver_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._receiver_task
-        await self.session.close()
+        with suppress(Exception):
+            await self.session.close()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.rstrip("\r\n")

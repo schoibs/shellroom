@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import delete, desc, func, select
 
-from shellroom.server.db.models import MessageRecord, RoomRecord
+from shellroom.server.db.models import MessageRecord, RoomEventRecord, RoomRecord
 from shellroom.server.db.session import Base, SQLiteDatabase
 from shellroom.server.model import Message, StoredRoom
 
@@ -69,6 +69,19 @@ class RoomStorage:
             max_users=record.max_users,
             status=record.status,
         )
+
+    async def delete_room(self, room_id: str) -> bool:
+        async with self.database.session() as session:
+            room_record = await session.get(RoomRecord, room_id)
+            if room_record is None:
+                return False
+
+            await session.execute(delete(MessageRecord).where(MessageRecord.room_id == room_id))
+            await session.execute(delete(RoomEventRecord).where(RoomEventRecord.room_id == room_id))
+            await session.execute(delete(RoomRecord).where(RoomRecord.id == room_id))
+            await session.commit()
+
+        return True
 
     async def save_message(
         self,

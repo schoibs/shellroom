@@ -87,7 +87,10 @@ class RoomRegistry:
                 room_id=room_id,
                 max_users=self.max_users_per_room,
             )
-            self._active_rooms[room.id] = RuntimeRoom(id=room.id)
+            self._active_rooms[room.id] = RuntimeRoom(
+                id=room.id,
+                empty_since_at=datetime.now(UTC),
+            )
             return room
 
     async def get_room(self, room_id: str) -> StoredRoom | None:
@@ -106,7 +109,7 @@ class RoomRegistry:
 
             runtime_room = self._active_rooms.get(room_id)
             if runtime_room is None:
-                runtime_room = RuntimeRoom(id=room_id)
+                runtime_room = RuntimeRoom(id=room_id, empty_since_at=datetime.now(UTC))
                 self._active_rooms[room_id] = runtime_room
 
             return stored_room, runtime_room
@@ -118,26 +121,37 @@ class RoomRegistry:
         display_name: str,
         websocket: object,
     ) -> tuple[RuntimeRoom, ClientConnection, list[ClientConnection], list[ClientConnection]]:
-        stored_room, runtime_room = await self.get_or_create_runtime_room(room_id)
+        async with self._lock:
+            stored_room = await self.storage.get_room(room_id)
+            if stored_room is None:
+                raise RoomNotFound("Room does not exist.")
+            if stored_room.status != "active" or stored_room.closed_at is not None:
+                raise RoomClosed("Room is closed.")
 
-        async with runtime_room.lock:
-            if client_id in runtime_room.clients:
-                raise ClientAlreadyJoined("Client is already connected to the room.")
-            if len(runtime_room.clients) >= stored_room.max_users:
-                raise RoomFull("Room is full.")
+            runtime_room = self._active_rooms.get(room_id)
+            if runtime_room is None:
+                runtime_room = RuntimeRoom(id=room_id, empty_since_at=datetime.now(UTC))
+                self._active_rooms[room_id] = runtime_room
 
-            existing_clients = list(runtime_room.clients.values())
-            now = datetime.now(UTC)
-            client = ClientConnection(
-                client_id=client_id,
-                display_name=display_name,
-                websocket=websocket,
-                joined_at=now,
-                last_seen_at=now,
-                status="online",
-            )
-            runtime_room.clients[client_id] = client
-            current_clients = list(runtime_room.clients.values())
+            async with runtime_room.lock:
+                if client_id in runtime_room.clients:
+                    raise ClientAlreadyJoined("Client is already connected to the room.")
+                if len(runtime_room.clients) >= stored_room.max_users:
+                    raise RoomFull("Room is full.")
+
+                existing_clients = list(runtime_room.clients.values())
+                now = datetime.now(UTC)
+                client = ClientConnection(
+                    client_id=client_id,
+                    display_name=display_name,
+                    websocket=websocket,
+                    joined_at=now,
+                    last_seen_at=now,
+                    status="online",
+                )
+                runtime_room.clients[client_id] = client
+                runtime_room.empty_since_at = None
+                current_clients = list(runtime_room.clients.values())
 
         return runtime_room, client, existing_clients, current_clients
 
@@ -154,9 +168,44 @@ class RoomRegistry:
             client = runtime_room.clients.pop(client_id, None)
             was_typing = runtime_room.typing_users.pop(client_id, None) is not None
             remaining_clients = list(runtime_room.clients.values())
+            if client is not None and not remaining_clients:
+                runtime_room.empty_since_at = datetime.now(UTC)
             typing_clients = self._typing_clients(runtime_room) if was_typing else None
 
         return client, remaining_clients, typing_clients
+
+    async def sweep_empty_rooms(self, ttl_seconds: int) -> list[str]:
+        now = datetime.now(UTC)
+        ttl = timedelta(seconds=ttl_seconds)
+        deleted_room_ids: list[str] = []
+
+        async with self._lock:
+            candidate_room_ids = [
+                runtime_room.id
+                for runtime_room in self._active_rooms.values()
+                if runtime_room.empty_since_at is not None
+                and now - runtime_room.empty_since_at >= ttl
+            ]
+
+        for room_id in candidate_room_ids:
+            async with self._lock:
+                runtime_room = self._active_rooms.get(room_id)
+                if runtime_room is None:
+                    continue
+
+                async with runtime_room.lock:
+                    empty_since_at = runtime_room.empty_since_at
+                    if runtime_room.clients or empty_since_at is None:
+                        continue
+                    if now - empty_since_at < ttl:
+                        continue
+
+                    was_deleted = await self.storage.delete_room(room_id)
+                    self._active_rooms.pop(room_id, None)
+                    if was_deleted:
+                        deleted_room_ids.append(room_id)
+
+        return deleted_room_ids
 
     async def list_clients(self, room_id: str) -> list[ClientConnection]:
         runtime_room = self._active_rooms.get(room_id)

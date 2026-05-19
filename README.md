@@ -59,6 +59,7 @@ The server reads configuration from environment variables:
 | `SHELLROOM_MESSAGE_HISTORY_LIMIT` | `100` | Recent messages sent to a joining client. |
 | `SHELLROOM_TYPING_TIMEOUT_SECONDS` | `3` | Seconds before stale typing indicators clear. |
 | `SHELLROOM_IDLE_TIMEOUT_SECONDS` | `60` | Seconds before an inactive user is marked idle. |
+| `SHELLROOM_EMPTY_ROOM_TTL_SECONDS` | `300` | Seconds before an empty room and its history are deleted. |
 
 Example:
 

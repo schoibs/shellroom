@@ -44,4 +44,5 @@ class RuntimeRoom:
     id: str
     clients: dict[str, ClientConnection] = field(default_factory=dict)
     typing_users: dict[str, datetime] = field(default_factory=dict)
+    empty_since_at: datetime | None = None
     lock: Lock = field(default_factory=Lock)
