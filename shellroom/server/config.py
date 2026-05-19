@@ -32,6 +32,7 @@ class ServerConfig:
     message_history_limit: int = 100
     typing_timeout_seconds: int = 3
     idle_timeout_seconds: int = 60
+    empty_room_ttl_seconds: int = 300
 
     @classmethod
     def from_env(cls) -> "ServerConfig":
@@ -50,6 +51,7 @@ class ServerConfig:
             message_history_limit=_read_int_env("SHELLROOM_MESSAGE_HISTORY_LIMIT", 100),
             typing_timeout_seconds=_read_int_env("SHELLROOM_TYPING_TIMEOUT_SECONDS", 3),
             idle_timeout_seconds=_read_int_env("SHELLROOM_IDLE_TIMEOUT_SECONDS", 60),
+            empty_room_ttl_seconds=_read_int_env("SHELLROOM_EMPTY_ROOM_TTL_SECONDS", 300),
         )
 
     @property

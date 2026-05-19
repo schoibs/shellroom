@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from typing import Annotated
@@ -24,6 +25,9 @@ from shellroom.server.registry import (
     RoomNotFound,
     RoomRegistry,
 )
+
+
+logger = logging.getLogger("uvicorn.error")
 
 
 class CreateRoomRequest(BaseModel):
@@ -73,15 +77,17 @@ async def lifespan(_: FastAPI):
     database.connect()
     await room_storage.initialize()
 
-    # starts a background asyncio task
-    presence_task = asyncio.create_task(_presence_sweep()) 
+    # checks for idle user and handles typing indicator
+    presence_task = asyncio.create_task(_presence_sweep())
+    # checks for empty rooms and whether they have been empty longer than TTL
+    cleanup_task = asyncio.create_task(_cleanup_empty_rooms())
     try:
         yield
     finally:
-        # on shutdown, stop bg task, waits for it to acknowledge cancellation, ignores the normal cancellation exception, then closes the database
-        presence_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await presence_task
+        for task in (presence_task, cleanup_task):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
         await database.close()
 
 
@@ -351,6 +357,20 @@ async def _presence_sweep() -> None:
                 change.clients,
                 _user_status_event(change.room_id, "user_idle", change.client),
             )
+
+
+async def _cleanup_empty_rooms() -> None:
+    try:
+        while True:
+            await asyncio.sleep(1)
+            deleted_room_ids = await room_registry.sweep_empty_rooms(
+                ttl_seconds=config.empty_room_ttl_seconds,
+            )
+            for room_id in deleted_room_ids:
+                logger.info("Deleted empty room %s after TTL.", room_id)
+    except asyncio.CancelledError:
+        logger.info("Cleanup worker cancelled.")
+        raise
 
 
 @app.get("/health", response_model=HealthResponse)

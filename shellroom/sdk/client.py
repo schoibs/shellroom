@@ -43,6 +43,7 @@ class RoomSession:
     client_id: str
     display_name: str
     websocket: Any
+    closed: bool = False # for idempotency, calling close twice would be fine
 
     async def send_chat(self, text: str) -> None:
         await self._send_room_event("chat_message", {"text": text})
@@ -77,6 +78,9 @@ class RoomSession:
             yield event
 
     async def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
         await self.websocket.close()
 
     async def _send(self, event: dict[str, Any]) -> None:
