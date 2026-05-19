@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from asyncio import Lock
+from datetime import UTC, datetime
 
 from server.db.storage import RoomStorage
-from server.model import RuntimeRoom, StoredRoom
+from server.model import ClientConnection, RuntimeRoom, StoredRoom
 from server.utils import generate_room_id
 
 
@@ -19,6 +20,22 @@ class RoomLimitExceeded(RoomRegistryError):
 
 class RoomIdGenerationFailed(RoomRegistryError):
     """Raised when a unique room ID cannot be generated."""
+
+
+class RoomNotFound(RoomRegistryError):
+    """Raised when a room does not exist."""
+
+
+class RoomClosed(RoomRegistryError):
+    """Raised when a room is no longer joinable."""
+
+
+class RoomFull(RoomRegistryError):
+    """Raised when a room has reached its user limit."""
+
+
+class ClientAlreadyJoined(RoomRegistryError):
+    """Raised when a client ID is already present in a room."""
 
 
 class RoomRegistry:
@@ -57,6 +74,63 @@ class RoomRegistry:
 
     def get_runtime_room(self, room_id: str) -> RuntimeRoom | None:
         return self._active_rooms.get(room_id)
+
+    async def get_or_create_runtime_room(self, room_id: str) -> tuple[StoredRoom, RuntimeRoom]:
+        async with self._lock:
+            stored_room = await self.storage.get_room(room_id)
+            if stored_room is None:
+                raise RoomNotFound("Room does not exist.")
+            if stored_room.status != "active" or stored_room.closed_at is not None:
+                raise RoomClosed("Room is closed.")
+
+            runtime_room = self._active_rooms.get(room_id)
+            if runtime_room is None:
+                runtime_room = RuntimeRoom(id=room_id)
+                self._active_rooms[room_id] = runtime_room
+
+            return stored_room, runtime_room
+
+    async def add_client(
+        self,
+        room_id: str,
+        client_id: str,
+        display_name: str,
+        websocket: object,
+    ) -> tuple[RuntimeRoom, ClientConnection, list[ClientConnection], list[ClientConnection]]:
+        stored_room, runtime_room = await self.get_or_create_runtime_room(room_id)
+
+        async with runtime_room.lock:
+            if client_id in runtime_room.clients:
+                raise ClientAlreadyJoined("Client is already connected to the room.")
+            if len(runtime_room.clients) >= stored_room.max_users:
+                raise RoomFull("Room is full.")
+
+            existing_clients = list(runtime_room.clients.values())
+            client = ClientConnection(
+                client_id=client_id,
+                display_name=display_name,
+                websocket=websocket,
+                joined_at=datetime.now(UTC),
+            )
+            runtime_room.clients[client_id] = client
+            current_clients = list(runtime_room.clients.values())
+
+        return runtime_room, client, existing_clients, current_clients
+
+    async def remove_client(
+        self,
+        room_id: str,
+        client_id: str,
+    ) -> tuple[ClientConnection | None, list[ClientConnection]]:
+        runtime_room = self._active_rooms.get(room_id)
+        if runtime_room is None:
+            return None, []
+
+        async with runtime_room.lock:
+            client = runtime_room.clients.pop(client_id, None)
+            remaining_clients = list(runtime_room.clients.values())
+
+        return client, remaining_clients
 
     async def _generate_unique_room_id(self) -> str:
         for _ in range(32):

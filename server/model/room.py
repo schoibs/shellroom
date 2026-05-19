@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from asyncio import Lock
 from dataclasses import dataclass
+from dataclasses import field
 from datetime import datetime
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +19,16 @@ class StoredRoom:
     status: str
 
 
+@dataclass(frozen=True, slots=True)
+class ClientConnection:
+    client_id: str
+    display_name: str
+    websocket: Any
+    joined_at: datetime
+
+
 @dataclass(slots=True)
 class RuntimeRoom:
     id: str
+    clients: dict[str, ClientConnection] = field(default_factory=dict)
+    lock: Lock = field(default_factory=Lock)
