@@ -230,6 +230,7 @@ async def websocket_room(websocket: WebSocket, room_id: str) -> None:
 
     joined_client_id: str | None = None
     try:
+        # server expects client to send join event upon connecting
         try:
             join_event = await websocket.receive_json()
         except ValueError:
