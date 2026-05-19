@@ -20,6 +20,16 @@ class StoredRoom:
 
 
 @dataclass(frozen=True, slots=True)
+class Message:
+    id: str
+    room_id: str
+    client_id: str
+    display_name: str
+    text: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class ClientConnection:
     client_id: str
     display_name: str

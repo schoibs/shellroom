@@ -29,6 +29,7 @@ class ServerConfig:
     room_id_length: int = 8
     max_users_per_room: int = 25
     max_active_rooms: int = 1000
+    message_history_limit: int = 100
 
     @classmethod
     def from_env(cls) -> "ServerConfig":
@@ -44,6 +45,7 @@ class ServerConfig:
             room_id_length=room_id_length,
             max_users_per_room=_read_int_env("SHELLROOM_MAX_USERS_PER_ROOM", 25),
             max_active_rooms=_read_int_env("SHELLROOM_MAX_ACTIVE_ROOMS", 1000),
+            message_history_limit=_read_int_env("SHELLROOM_MESSAGE_HISTORY_LIMIT", 100),
         )
 
     @property

@@ -13,7 +13,7 @@ from starlette.websockets import WebSocketDisconnect
 from server.config import ServerConfig
 from server.db.session import SQLiteDatabase
 from server.db.storage import RoomStorage
-from server.model import ClientConnection
+from server.model import ClientConnection, Message
 from server.registry import (
     ClientAlreadyJoined,
     RoomClosed,
@@ -49,6 +49,13 @@ class JoinEventError(Exception):
         self.message = message
 
 
+class ClientEventError(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 config = ServerConfig.from_env()
 database = SQLiteDatabase(config.database_url)
 room_storage = RoomStorage(database)
@@ -73,8 +80,14 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="ShellRoom", version="0.1.0", lifespan=lifespan)
 
 
+def _format_timestamp(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
 def _utc_timestamp() -> str:
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    return _format_timestamp(datetime.now(UTC))
 
 
 def _server_event(room_id: str, event_type: str, payload: dict) -> dict:
@@ -94,15 +107,43 @@ def _client_presence(client: ClientConnection) -> dict:
     }
 
 
-def _room_state_event(room_id: str, clients: list[ClientConnection]) -> dict:
+def _message_payload(message: Message) -> dict:
+    return {
+        "message_id": message.id,
+        "client_id": message.client_id,
+        "display_name": message.display_name,
+        "text": message.text,
+        "timestamp": _format_timestamp(message.created_at),
+    }
+
+
+def _room_state_event(
+    room_id: str,
+    clients: list[ClientConnection],
+    recent_messages: list[Message],
+) -> dict:
     return _server_event(
         room_id=room_id,
         event_type="room_state",
         payload={
             "users": [_client_presence(client) for client in clients],
-            "recent_messages": [],
+            "recent_messages": [_message_payload(message) for message in recent_messages],
         },
     )
+
+
+def _chat_message_event(room_id: str, message: Message) -> dict:
+    return {
+        "type": "chat_message",
+        "room_id": room_id,
+        "timestamp": _format_timestamp(message.created_at),
+        "payload": {
+            "message_id": message.id,
+            "client_id": message.client_id,
+            "display_name": message.display_name,
+            "text": message.text,
+        },
+    }
 
 
 def _user_joined_event(room_id: str, client: ClientConnection) -> dict:
@@ -166,6 +207,43 @@ def _parse_join_event(room_id: str, event: object) -> tuple[str, str]:
         raise JoinEventError("INVALID_DISPLAY_NAME", "Display name must be 24 characters or fewer.")
 
     return client_id, display_name
+
+
+def _has_control_characters(text: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in text)
+
+
+def _parse_chat_message_event(room_id: str, joined_client_id: str, event: object) -> str:
+    if not isinstance(event, dict):
+        raise ClientEventError("INVALID_EVENT", "Expected a JSON object.")
+
+    if event.get("type") != "chat_message":
+        event_type = event.get("type")
+        raise ClientEventError("UNSUPPORTED_EVENT", f"Event type '{event_type}' is not supported yet.")
+
+    if event.get("room_id") != room_id:
+        raise ClientEventError("ROOM_MISMATCH", "Event room_id must match the WebSocket path.")
+
+    if event.get("client_id") != joined_client_id:
+        raise ClientEventError("CLIENT_MISMATCH", "Event client_id must match the joined client.")
+
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        raise ClientEventError("INVALID_PAYLOAD", "Event payload must be an object.")
+
+    text = payload.get("text")
+    if not isinstance(text, str):
+        raise ClientEventError("INVALID_MESSAGE", "Message text is required.")
+
+    text = text.rstrip("\r\n")
+    if not text.strip():
+        raise ClientEventError("INVALID_MESSAGE", "Message text cannot be empty.")
+    if len(text) > 2000:
+        raise ClientEventError("INVALID_MESSAGE", "Message text must be 2,000 characters or fewer.")
+    if _has_control_characters(text):
+        raise ClientEventError("INVALID_MESSAGE", "Message text cannot contain control characters.")
+
+    return text
 
 
 async def _send_error(websocket: WebSocket, room_id: str, code: str, message: str) -> None:
@@ -250,17 +328,11 @@ async def websocket_room(websocket: WebSocket, room_id: str) -> None:
                 display_name=display_name,
                 websocket=websocket,
             )
-            
         except JoinEventError as exc:
             await _send_error_and_close(websocket, room_id, exc.code, exc.message)
             return
         except RoomNotFound:
-            await _send_error_and_close(
-                websocket,
-                room_id,
-                "ROOM_NOT_FOUND",
-                "Room does not exist.",
-            )
+            await _send_error_and_close(websocket, room_id, "ROOM_NOT_FOUND", "Room does not exist.")
             return
         except RoomClosed:
             await _send_error_and_close(websocket, room_id, "ROOM_CLOSED", "Room is closed.")
@@ -269,16 +341,12 @@ async def websocket_room(websocket: WebSocket, room_id: str) -> None:
             await _send_error_and_close(websocket, room_id, "ROOM_FULL", "Room is full.")
             return
         except ClientAlreadyJoined:
-            await _send_error_and_close(
-                websocket,
-                room_id,
-                "CLIENT_ALREADY_JOINED",
-                "Client is already connected to the room.",
-            )
+            await _send_error_and_close(websocket, room_id, "CLIENT_ALREADY_JOINED", "Client is already connected to the room.")
             return
 
         joined_client_id = client.client_id
-        await websocket.send_json(_room_state_event(room_id, current_clients))
+        recent_messages = await room_storage.list_recent_messages(room_id=room_id, limit=config.message_history_limit)
+        await websocket.send_json(_room_state_event(room_id, current_clients, recent_messages))
         await _broadcast(existing_clients, _user_joined_event(room_id, client))
 
         while True:
@@ -288,13 +356,39 @@ async def websocket_room(websocket: WebSocket, room_id: str) -> None:
                 await _send_error(websocket, room_id, "INVALID_JSON", "Expected a JSON event.")
                 continue
 
-            event_type = event.get("type") if isinstance(event, dict) else "unknown"
-            await _send_error(
-                websocket,
-                room_id,
-                "UNSUPPORTED_EVENT",
-                f"Event type '{event_type}' is not supported yet.",
-            )
+            if not isinstance(event, dict):
+                await _send_error(websocket, room_id, "INVALID_EVENT", "Expected a JSON object.")
+                continue
+
+            event_type = event.get("type")
+            if event_type != "chat_message":
+                await _send_error(
+                    websocket,
+                    room_id,
+                    "UNSUPPORTED_EVENT",
+                    f"Event type '{event_type}' is not supported yet.",
+                )
+                continue
+
+            try:
+                text = _parse_chat_message_event(room_id, joined_client_id, event)
+            except ClientEventError as exc:
+                await _send_error(websocket, room_id, exc.code, exc.message)
+                continue
+
+            try:
+                message = await room_storage.save_message(
+                    room_id=room_id,
+                    client_id=client.client_id,
+                    display_name=client.display_name,
+                    text=text,
+                )
+            except ValueError:
+                await _send_error(websocket, room_id, "ROOM_NOT_FOUND", "Room does not exist.")
+                continue
+
+            current_clients = await room_registry.list_clients(room_id)
+            await _broadcast(current_clients, _chat_message_event(room_id, message))
     except WebSocketDisconnect:
         pass
     finally:

@@ -1,5 +1,5 @@
 """Application models for the ShellRoom server."""
 
-from server.model.room import ClientConnection, RuntimeRoom, StoredRoom
+from server.model.room import ClientConnection, Message, RuntimeRoom, StoredRoom
 
-__all__ = ["ClientConnection", "RuntimeRoom", "StoredRoom"]
+__all__ = ["ClientConnection", "Message", "RuntimeRoom", "StoredRoom"]

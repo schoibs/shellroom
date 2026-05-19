@@ -132,6 +132,14 @@ class RoomRegistry:
 
         return client, remaining_clients
 
+    async def list_clients(self, room_id: str) -> list[ClientConnection]:
+        runtime_room = self._active_rooms.get(room_id)
+        if runtime_room is None:
+            return []
+
+        async with runtime_room.lock:
+            return list(runtime_room.clients.values())
+
     async def _generate_unique_room_id(self) -> str:
         for _ in range(32):
             room_id = generate_room_id(self.room_id_length)
