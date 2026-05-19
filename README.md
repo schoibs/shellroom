@@ -79,6 +79,7 @@ shellroom create --name Alice
 
 ShellRoom displays the room ID, invite URL, and join command in the UI header.
 Type `/who` in the chat input to show the users currently present in the room.
+Type `/clear` to clear the local message view without changing room history.
 
 ## Join A Room
 

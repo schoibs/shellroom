@@ -244,6 +244,9 @@ class ShellRoomApp(App[None]):
         if command == "/who":
             await self._show_who()
             return
+        if command == "/clear":
+            await self._clear_message_log()
+            return
 
         await self._append_line(f"Unknown command: {escape(command)}", "error")
 
@@ -257,6 +260,10 @@ class ShellRoomApp(App[None]):
             for user in self._users.values()
         ]
         await self._append_line(f"In room: {', '.join(entries)}", "system")
+
+    async def _clear_message_log(self) -> None:
+        message_log = self.query_one("#message-log", VerticalScroll)
+        await message_log.remove_children()
 
     async def _refresh_typing(self) -> None:
         try:
