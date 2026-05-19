@@ -101,5 +101,3 @@ shellroom version
 
 If `--name` is omitted, ShellRoom uses your system username. Display names are
 trimmed to 24 characters.
-
-```
