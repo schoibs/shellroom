@@ -7,7 +7,7 @@ from datetime import datetime
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from server.db.session import Base
+from shellroom.server.db.session import Base
 
 
 class RoomRecord(Base):
@@ -46,4 +46,3 @@ class RoomEventRecord(Base):
     event_type: Mapped[str] = mapped_column(String, nullable=False)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-

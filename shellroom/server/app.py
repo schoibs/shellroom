@@ -10,11 +10,11 @@ from fastapi import Body, FastAPI, HTTPException, WebSocket, status
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.websockets import WebSocketDisconnect
 
-from server.config import ServerConfig
-from server.db.session import SQLiteDatabase
-from server.db.storage import RoomStorage
-from server.model import ClientConnection, Message
-from server.registry import (
+from shellroom.server.config import ServerConfig
+from shellroom.server.db.session import SQLiteDatabase
+from shellroom.server.db.storage import RoomStorage
+from shellroom.server.model import ClientConnection, Message
+from shellroom.server.registry import (
     ClientAlreadyJoined,
     RoomClosed,
     RoomFull,

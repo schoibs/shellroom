@@ -5,9 +5,9 @@ from __future__ import annotations
 from asyncio import Lock
 from datetime import UTC, datetime
 
-from server.db.storage import RoomStorage
-from server.model import ClientConnection, RuntimeRoom, StoredRoom
-from server.utils import generate_room_id
+from shellroom.server.db.storage import RoomStorage
+from shellroom.server.model import ClientConnection, RuntimeRoom, StoredRoom
+from shellroom.server.utils import generate_room_id
 
 
 class RoomRegistryError(Exception):

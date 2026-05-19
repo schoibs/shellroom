@@ -7,9 +7,9 @@ from uuid import uuid4
 
 from sqlalchemy import desc, func, select
 
-from server.db.models import MessageRecord, RoomRecord
-from server.db.session import Base, SQLiteDatabase
-from server.model import Message, StoredRoom
+from shellroom.server.db.models import MessageRecord, RoomRecord
+from shellroom.server.db.session import Base, SQLiteDatabase
+from shellroom.server.model import Message, StoredRoom
 
 
 class RoomStorage:
