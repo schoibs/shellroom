@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shellroom"
+version = "0.1.0"
+description = "Ephemeral terminal-native group chat via invite links."
+requires-python = ">=3.12"
+dependencies = [
+    "aiosqlite",
+    "fastapi",
+    "greenlet",
+    "httpx",
+    "SQLAlchemy",
+    "textual",
+    "typer",
+    "uvicorn",
+    "websockets",
+]
+
+[project.scripts]
+shellroom = "shellroom.cli.main:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["shellroom*"]
